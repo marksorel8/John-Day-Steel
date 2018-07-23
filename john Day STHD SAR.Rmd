@@ -1,0 +1,633 @@
+---
+title: "John Day Steelhead"
+author: "Mark Sorel"
+date: "May 9, 2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r include=F,cache=TRUE}
+path<-"C:/Users/Mark.Sorel/Documents/Life-cycle modeling/Wenatchee/PTAGIS/GIT CJS/wenatchee.rearing.diversity/CBR fish files"
+
+# upload summer steelhead juvenile detection data at Bonneville compiled by CBReaserch 
+CBRSTHD<-data.frame()
+for (yy in 1998:2016) {
+  fname <- paste0("BON_",yy,"_3_2.csv")
+  dat<-read.csv(paste(path,fname,sep="/"))
+    CBRSTHD<-rbind(CBRSTHD,dat)
+}
+```
+
+```{r include=F,cache=TRUE}
+#subset wild listed fish
+wildListed<-droplevels(subset(CBRSTHD,rear_type=="W"&esu_type!="Not_listed"))
+
+##look at efficiency of adult detection at bonneville (is it approporiate to assumer 100% detection and use binomial logistic regression for SAR)
+
+#fish detected as adults at Lower Granite as adults
+LGdet<-droplevels(subset(CBRSTHD,!is.na(ad_lgr_date)))
+#proportion also detected at Bonneville as adults
+tapply(!is.na(LGdet$ad_bon_proj),LGdet$year,function(x)sum(x)/length(x))
+#Fish detected at projects other than Lower Granite or Bonneville
+otherProjDet<-droplevels(subset(CBRSTHD,!is.na(ad_other_proj)))
+#proportion detected at Bonneville by year
+tapply(!is.na(otherProjDet$ad_bon_proj),otherProjDet$year,function(x)sum(x)/length(x))
+
+
+#based on lower detection efficiency at Bonneville prior to 2001,drop 1998-2000. Also drop juvenile detection years that haven't had enough time to come back yet (after 2014)
+
+wildListedsub<-droplevels(subset(wildListed,year>=2001&year<=2014))
+
+#subset John Day fish
+JDlistedsub<-droplevels(subset(wildListedsub,rel_subbasin=="John Day"))
+
+#histogram of tag lengths
+hist(JDlistedsub$length,breaks=100,main="length histogram")
+#drop fish tagged at greater than 250mm (could be kelts)
+JDlistedsub<-droplevels(subset(JDlistedsub,length<=250))
+#another length histrogram after subsetting
+hist(JDlistedsub$length,breaks=100,main="length histogram")
+
+#look at tag length by year to see if it is impalanced, which could bias SARs
+#doesn't appear to be too much interannual variability in mean tag length
+barplot(tapply(JDlistedsub$length,JDlistedsub$year,mean ),ylab="mean tag length")
+
+
+#look at release site by year to see if it is imbalanced, which could bias model if fish from different parts of the John Day basin have different SARs
+table(JDlistedsub$year,JDlistedsub$rel_site )
+
+##Check how far upstream fish were tagged on average each year, again to look for interannual discrpencies. Tagging was a bit lower on average in the first two year,
+
+#reformat to distance from mouth of columbia
+JDlistedsub$rel_rkm2<-
+unlist(lapply(strsplit(as.character(JDlistedsub$rel_rkm),"[.]"), function(x)sum(as.numeric(x))))
+tapply(as.numeric(JDlistedsub$rel_rkm2),JDlistedsub$year,mean,na.rm=T)
+
+#histogram of tagging KM
+hist(JDlistedsub$rel_rkm2,main="",xlab="river Km released",breaks=100)
+
+#histogram of julian day of release as juveniles. Most fish tagged in spring.
+JDlistedsub$relDay<-as.numeric(format(as.Date(JDlistedsub$rel_date,fomat="%Y-%m-%d"),"%j"))
+hist(JDlistedsub$relDay,xlab="julian day of release",main="")
+
+#histogram of number of days between tagging and detection at Bonn
+JDlistedsub$RelToBon<-as.numeric(as.Date(JDlistedsub$juv_date,fomat="%Y-%m-%d")-as.Date(JDlistedsub$rel_date,fomat="%Y-%m-%d"))
+hist(JDlistedsub$RelToBon,main = "",xlab="days from release to bonn detection",breaks=1000,xlim=c(0,700))
+
+#average days between tagging and detection at bonn by year. In general this has increased as fish have been tagged further up in the watershed
+tapply(JDlistedsub$RelToBon,JDlistedsub$year,mean )
+
+
+##the CBR files dont include what site each fish was detected at Bonneville (corner collector vs. other bypass), or their juvenile capture method (screw trap vs. electrofish), so I downloaded interogatin files from PTAGIS for detections at Bonneville juvenile facilities. 
+
+#Load the file from PTAGIS
+assign("pit",read.csv("C:/Users/Mark.Sorel/Documents/Life-cycle modeling/John Day sthd/JD sthd Interrogation Summary .csv"))
+
+#Add a column for detection site at Bonneville
+maPit<-match(JDlistedsub$tag_id,pit$Tag.Code)
+#I couldn't download the interogation file from PTAGIS for 3 of the 4,391 fish for some reason
+sum(is.na(maPit))
+
+JDlistedsub$BonSite<-pit$Site.Name[maPit]
+
+#add column of juvenile capture method
+JDlistedsub$captureMethod<-droplevels(pit$Mark.Capture.Method.Name[maPit])
+
+#drop fish that I couldn't get interogation files for
+JDlistedsub<-JDlistedsub[!is.na(maPit),]
+
+#Number of fish detected at each site in Bonneville by year. Corner collector detections start in 2006.
+table(JDlistedsub$year,JDlistedsub$BonSite)
+
+#Number of fish captured with each method 
+table(JDlistedsub$year,JDlistedsub$captureMethod)
+
+#number of fish that did or did not survive by year
+table(JDlistedsub$year,JDlistedsub$survived)
+
+#number of years spend in salt water by year
+saltAges<-as.matrix(table(JDlistedsub$year,JDlistedsub$salt_yrs ))
+#proportion of "salt ages" by year
+saltAgesP<-saltAges/matrix(rowSums(saltAges),nrow=nrow(saltAges),ncol=ncol(saltAges))
+
+#plot of porportion of "salt years" by juvenile migration year. Ther is interannual variability. Not sure how much this might affect SAR. Could test in models?
+layout(matrix(1:2,2,1),width=1,heights=c(1,3))
+par(mar=c(1,5,1,2))
+barplot(rowSums(saltAges),xaxt="n",ylab="frequency")
+par(mar=c(4,5,1,2))
+b<-barplot(t(saltAgesP),ylab="ocean years",legend.text = 1:3,args.legend = list(x=18,y=1,xpd=NA,bty="n",bg=NULL),xlab="juvenile migration year")
+
+#add column for average salt for each juvenile migration year
+saltAgesM<-tapply(JDlistedsub$salt_yrs, JDlistedsub$year, mean,na.rm=T)
+#fill in missing value with overall average
+saltAgesM["2003"]<-mean(saltAgesM,na.rm=T)
+
+#Look at juvenile timing at Bonneville by year. red line is annual median.
+par(mfrow=c(4,4),mar=c(2,1,2,1),oma=c(1,1,0,0))
+for ( i in sort(unique(JDlistedsub$year))){
+  dat<-subset(JDlistedsub,year==i)
+  hist(dat$julian,main=i,breaks=15,col="grey",border="grey",xlim=range(JDlistedsub$julian),yaxt="n")
+  abline(v=median(dat$julian),col="red")
+}
+mtext("probability",2,0,outer=T,xpd=NA)
+
+mtext("Bonneville passage day",1,0,outer=T,xpd=NA)
+
+#----------------------------------------------------------
+## load and merge envirnmental data
+#----------------------------------------------------------
+#specify file locations
+myPath<-"C:/Users/Mark.Sorel/Documents/Life-cycle modeling/Wenatchee/SAR/LCM environmental data"
+
+#extract names of many files
+envFiles<-list.files(path=myPath,pattern="*.csv")
+
+#data frame for merging environmental variables. I know that this is slow and cluinky way of doing it...but I guess my brain wasn't working at the time 
+envdata<-data.frame(year=1900:2018)
+#compile environmental variable (indices) time series 
+for ( i in envFiles){y<-read.csv(paste(myPath,i,sep="/"))
+envdata<-merge(envdata,y,by="year",all.x=T,all.y=T)}
+
+
+# I was interested in whether hydrosystem conditions might be predictive of SAR due to latent effects, so I downloaded from CBR DART "spill %", "Outflow", "spill", and "temp" from John Day, The Dalles, and Bonneville dams over the interval 20 Apr-1 Jun, when the bulk of fish are moving through the system. I averaged over all the dams and days for each variable to create an annual index.
+envdataNew<-envdata
+par(mfrow=c(1,1))
+#for each variable/data file
+for ( i in c("spillPct","outflow","spill","temp")){
+#load it
+  dat<-read.csv(paste0("C:/Users/Mark.Sorel/Documents/Life-cycle modeling/John Day sthd/",i,".csv"))
+#average within each year
+dat2<-tapply(dat$value,dat[,"year"],mean,na.rm=T)
+#plot
+plot(as.numeric(names(dat2)),dat2,main=i,typ="b")
+# add to other environmental data
+envdataNew<-merge(envdataNew,dat2,by.x = "year",by.y = "row.names")
+colnames(envdataNew)[length(envdataNew)]<-i
+}
+
+#scale the variables based on the 2001-2014 period
+envdataSc<-scale(envdataNew[envdataNew$year>=2001&envdataNew$year<=2014,])
+
+#make a copy of that scaled matrix and convert to a data.frame, so that the scaling attributes are not lost in the original.
+envdataSc2<-as.data.frame(envdataSc)
+#change year back to unscaled variable in new data frame. 
+envdataSc2$year<-2001:2014
+
+#----------------------------------------------------------
+###    Merge environmental and sthd data 
+###    and begin SAR model variable selection
+#----------------------------------------------------------
+#merge fish and environemtnal data
+JDsubEnv<-merge(JDlistedsub ,envdataSc2,by="year",all.x = T)
+
+#scale numerical covariates that weren't already scaled
+colnames(JDsubEnv)
+JDsubEnv[,c("julian","length","relDay","RelToBon","rel_rkm2" )]<-scale(JDsubEnv[,c("julian","length","relDay","RelToBon","rel_rkm2" )])
+
+#add a quadratic term for julian
+JDsubEnv$julianSq<-scale(JDsubEnv$julian^2)
+
+#------------------------------------------
+#  Lasso model selection (used for variable reduction)
+#------------------------------------------
+library(glmnet)
+#formula for considering all variables in the data but no interactions
+fNoInt<-as.formula(y~.)
+
+#Choose a subset of columns from the data, getting rid of variables we are not interested in or that are missing data
+colnames(JDsubEnv)
+
+JDenvLite<-droplevels(subset(JDsubEnv,select=-c(survived,year,tag_id,juv_datetime,juv_date,species,run,rear_type,file_id,rel_site,rel_huc,rel_rkm,rel_date,esu_type,tag_year,migr_year,brood_year,salt_yrs,ad_bon_date,ad_bon_proj,ad_lgr_date,ad_lgr_proj,ad_other_date,ad_other_proj,rel_basin,rel_subbasin,trans_dam,exclude,CRtemp.win,CRtemp.aut,transport.aut,transport.spr,transport.sum,transport.win,ChinookCPUE,cohoCPUE,PC1,PC2)))
+
+
+
+#assign resonse variable to "y"
+y<-JDsubEnv$survived
+#create model matrix to run lasso with glmnet 
+xNoInt<-model.matrix(fNoInt,JDenvLite)
+
+
+
+#run lasso model selection with a range of different lambdas (penalty coeficient)
+glmnetModnoInt<-glmnet(xNoInt,y,family="binomial")
+
+
+#plot deviance ratio v. lambda (penalty for adding variables) 
+plot(glmnetModnoInt$lambda,glmnetModnoInt$dev.ratio,xlab="lambda",ylab="dev.ratio")
+
+#look at some of the models chosen with different lambdas. Some interesting variables come up in top models, upwelling, temperature, length, date of biological transition, and more.
+for ( i in 1:20){
+  print(glmnetModnoInt$lambda[i])
+print(coef(glmnetModnoInt)[,i][coef(glmnetModnoInt)[,i]!=0])
+}
+
+
+#look at how many times each variable was selected in a model across all lambdas. Top 4 are "cui.spr", "length", "CRtemp.spr", and "julianSq"
+lassoVars<-sort(rowSums(abs(coef(glmnetModnoInt))>0))[sort(rowSums(abs(coef(glmnetModnoInt))>0))>0]
+lassoVars
+#look at average regression coeficient for each variable that was included in a model
+rowMeans ((coef(glmnetModnoInt)))[abs(rowMeans ((coef(glmnetModnoInt))))>0]
+
+#I'll use some of the variables selected in "lasso" when I "dredge" later
+
+#------------------------------------------
+#  look at correlation coefficients between variables and survival
+#------------------------------------------
+
+corTest<-cor(cbind(JDsubEnv$survived, Filter(is.numeric,JDenvLite)),use="pairwise.complete.obs")
+#sorted by absolute value of correlation coefficient with surival
+corVars<-corTest[,1][order(abs(corTest[,1]))]
+corVars
+
+#I will use some of the variables that are most correlated with survival whe "dredging" later
+
+```
+Models of SAR for wild John Day steelhead
+```{r,cache=TRUE}
+
+#------------------------------------------
+# simple models of SAR based on year, julian, and julian ^2 with different combinations of fixed and random effects
+#------------------------------------------
+
+#null model
+nullMod<-glm(formula = survived ~ 1, family = "binomial", 
+    data = JDsubEnv)
+summary(nullMod)
+
+
+#year only
+yrMod<-glm(formula = survived ~ factor(year), family = "binomial", 
+    data = JDsubEnv)
+summary(yrMod)
+
+#julian only
+julianMod<-glm(formula = survived ~ julian, family = "binomial", 
+    data = JDsubEnv)
+
+#year and julian
+yrJulMod<-glm(formula = survived ~ factor(year) + julian, family = "binomial", 
+    data = JDsubEnv)
+summary(yrJulMod)
+
+#year and julian and julian^2
+yrJulSqMod<-glm(formula = survived ~ factor(year) + julian+ julianSq, family = "binomial", 
+    data = JDsubEnv)
+summary(yrJulSqMod)
+
+
+AIC(yrMod,julianMod,yrJulMod,yrJulSqMod)
+
+##-------------------
+##  simple random- and Mixed-effects models
+##-------------------
+library(lme4)
+
+##random year
+#make "year" a factor
+JDsubEnv$year<-as.factor(JDsubEnv$year)
+randYrMod<-glmer(formula = survived ~ (1|year), family = "binomial", 
+    data = JDsubEnv)
+summary(randYrMod)
+
+##random julian slope per year
+randJulMod<-glmer(formula = survived ~julian+ (0+julian|year), family = "binomial", 
+    data = JDsubEnv)
+summary(randJulMod)
+
+
+##julian + random year
+JulrandYrMod<-glmer(formula = survived ~julian+ (1|year), family = "binomial", 
+    data = JDsubEnv)
+summary(JulrandYrMod)
+
+
+
+## random julian slope per year +random year
+randJulRandYrMod<-glmer(formula = survived ~julian +(julian | year), family = "binomial", 
+    data = JDsubEnv)
+summary(randJulRandYrMod)
+
+
+AIC(nullMod,yrMod,julianMod,yrJulMod,yrJulSqMod,randYrMod,randJulMod,JulrandYrMod,randJulRandYrMod)
+
+
+#******
+# Plot survival by year 
+#******
+#unique years in dataset
+yrs<-as.numeric(as.character(sort(unique(JDsubEnv$year))))
+#predict SAR and SE
+yearPred<-predict(yrMod,newdata = data.frame(year=yrs),se=T)
+#plot predictions
+plot(x=yrs,y=plogis(yearPred$fit),type="b",ylab="SAR",ylim=c(0,.15))
+#Error bars
+segments(yrs,plogis(yearPred$fit-1.96*yearPred$se.fit),yrs,plogis(yearPred$fit+1.96*yearPred$se.fit))
+
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+#                    Dredge! This takes a little time
+#                   
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#construct global model with all the variables that we want to test
+#the maximum number of variables that "dredge" can handle is 31 but it is obviously faster with fewer
+
+#come up with a combination of "top variables" based on the number of times each was selected in lasso or their correlation with survival 
+CorVarNames<-names(corVars[length(corVars)-1:10])
+lasVarNames<-names(lassoVars[length(lassoVars)-1:10])
+
+matchCorVarNames<-match(CorVarNames,lasVarNames)
+matchlasVarNames<-match(lasVarNames,CorVarNames)
+
+sum(is.na(matchCorVarNames))
+sum(is.na(matchlasVarNames))
+
+paste(c(CorVarNames,lasVarNames[is.na(matchlasVarNames)]),sep=" + ",collapse = " + ")
+
+#global model fixed effects
+globalJDsarFixed<-glm(survived~cui.spr + CRflow.aut + BioTrans + ersstArc.spr + ersstArc.win + ersstWAcoast.spr + cui.sum + pdo.spr + length + ScopBio + CRtemp.spr + julian + NcopBio + RelToBon + spillPct + IchthyoCom + rel_rkm2  , family= "binomial", data = JDsubEnv)
+
+
+#global model random-year effect
+globalJDsarRandYr<-glmer(survived~ cui.spr + CRflow.aut + BioTrans + ersstArc.spr + ersstArc.win + ersstWAcoast.spr + cui.sum + pdo.spr + length + ScopBio + CRtemp.spr + julian + NcopBio + RelToBon + spillPct + IchthyoCom + rel_rkm2  +   (1|year) , family= "binomial", data = JDsubEnv)
+
+#global model random julian and random year
+globalJDsarRandJulYr<-glmer(survived~ cui.spr + CRflow.aut + BioTrans + ersstArc.spr + ersstArc.win + ersstWAcoast.spr + cui.sum + pdo.spr + length + ScopBio + CRtemp.spr + julian + NcopBio + RelToBon + spillPct + IchthyoCom + rel_rkm2 +(1+julian | year) , family= "binomial", data = JDsubEnv)
+
+
+
+#-------------------
+# parallel dredging
+#-------------------
+
+
+library(snow)
+#set up clusters
+clust <- try(makeCluster(getOption("cl.cores", 6), type = "SOCK"))
+
+clusterExport(clust,"JDsubEnv")
+
+
+library(MuMIn)
+
+#dredge, limiting maximum number of variable to 4. 
+options(na.action = "na.fail")
+
+#fixed effect
+JDsthdDredgeFixed<-pdredge(globalJDsarFixed,trace=5                        ,m.lim=c(1,4),cluster=clust)
+
+head(JDsthdDredgeFixed)
+
+#random year, limiting numer of fixed effects to 3 because these model take longer
+#This takes a while (~10 mins on my computer)
+#load package "lme4" to clusters
+clusterEvalQ(clust, library(lme4))
+#dredge
+JDsthdDredgeRandYr<-pdredge(globalJDsarRandYr,trace=5                        ,m.lim=c(1,3),cluster=clust)
+
+head(JDsthdDredgeRandYr)
+
+#random year and julian, limiting numer of fixed effects to 2
+#This takes a while (~10 mins on my computer)
+JDsthdDredgeRandYrJul<-pdredge(globalJDsarRandJulYr,trace=5                        ,m.lim=c(1,3),cluster=clust)
+
+head(JDsthdDredgeRandYrJul)
+
+options(na.action = "na.omit")
+stopCluster(clust)
+
+#***** 
+#Fish that are longer at tagging clearly have higher SAR; however, we are interested in predicting average SAR accross the entire population so we will look at models without individual covatiates 
+#******
+
+#fixed effects only
+head(JDsthdDredgeFixed[is.na(JDsthdDredgeFixed$length)&is.na(JDsthdDredgeFixed$rel_rkm2),])
+
+#Random year effects
+head(JDsthdDredgeRandYr[is.na(JDsthdDredgeRandYr$length)&is.na(JDsthdDredgeRandYr$rel_rkm2),])
+
+##Random year and julian effects
+head(JDsthdDredgeRandYrJul[is.na(JDsthdDredgeRandYrJul$length)&is.na(JDsthdDredgeRandYrJul$rel_rkm2),])
+
+summary(get.models(JDsthdDredgeRandYrJul,subset="524")[[1]])
+
+#in the top random year and julian slope model, the random effects fof "year" and "julian" and perfectly negatively correlated. I assume this is bad.
+
+
+
+#-------------------------------------------------------
+#      Look at model fits for top-ranked models
+#------------------------------------------------------
+
+#fit model
+JDsthdRndYrTop<-glmer(survived~ cui.spr + CRtemp.spr + julian + (1| year) , family= "binomial", data = JDsubEnv)
+summary(JDsthdRndYrTop)
+
+#hosmer lemeshow test for lack of fit
+#some weak evidence for a lack of fit
+library(ResourceSelection)
+for(i in c(5,10,15,20,25)){
+print(hoslem.test(JDsubEnv$survived,fitted(JDsthdRndYrTop),g=i))}
+
+#AUC
+library(pROC)
+JDsarROC<-roc(JDsubEnv$survived,predict(JDsthdRndYrTop,newdata=JDsubEnv))
+JDsarROC
+
+##plot predictions and residuals 
+#predict each fish
+predJDsthdRndYrTop <- predict(JDsthdRndYrTop,se=T,re.form=~0)
+#average within year
+predJDtop<-tapply(predJDsthdRndYrTop$fit,JDsubEnv$year,mean)
+predJDtopSE<-tapply(predJDsthdRndYrTop$se.fit,JDsubEnv$year,mean)
+#random year standard deviation
+rand<-as.numeric(as.data.frame(VarCorr(JDsthdRndYrTop))["sdcor"])
+#combined SE of fixed and random
+combSE<-sqrt(predJDtopSE^2+rand^2)
+
+#plot
+par(mar=c(4,4,1.1,1.1))
+plot(yrs,plogis(predJDtop),pch=18,type="b",ylim=c(0,0.2),ylab="SAR",xlab="year of estuary entry (brood+2)")
+
+#fixed-effects CI
+polygon(c(yrs,rev(yrs)),c(plogis(predJDtop+1.96*predJDtopSE),rev(plogis(predJDtop-1.96*predJDtopSE))),border = NA,col="lightgrey")
+#add back predictions
+points(yrs,plogis(predJDtop),pch=18,type="b")
+
+#prediction from fixed-year model
+points(yrs,plogis(yearPred $fit) ,pch=19,col=rgb(1,.2,.2,.7),ylim=c(0,0.07))
+
+segments(yrs,plogis(yearPred$fit+1.96*yearPred$se.fit),yrs,plogis(yearPred$fit-1.96*yearPred$se.fit),col=rgb(1,.2,.2,.7))
+
+#confidence interval including random-year effect
+points(yrs,plogis(predJDtop+(1.96*combSE)),type="l",lty=2,col="darkgrey")
+
+points(yrs,plogis(predJDtop-1.96*combSE),type="l",lty=2,col="darkgrey")
+
+legend(x="topleft",legend=c("observed", "model","fixed-effect CI","fixed + random CI"),pch=c(19:18,15,NA),col=c(col=rgb(1,.2,.2,.7),"black","grey","grey"),border = NA,lty=c(NA,NA,NA,2),cex=.7)
+
+#end of plot
+
+
+#calaculate residuals for year
+JDtopResid<-
+plogis(predJDtop)-tapply(JDsubEnv$survived,JDsubEnv$year,mean)
+
+#plot residuals vs. year
+plot(x=yrs ,JDtopResid
+,type="b",ylab="residuals",xlab="")
+abline(h=0)
+
+#look at residual autocorrelation at different lags
+a<-acf(JDtopResid)
+a
+
+#---------------------
+# fit miraculously well-fitting 2006-shift model
+#---------------------
+#make a dummy variable for the shift after 2005
+JDsubEnv$after05<-as.numeric(as.character(JDsubEnv$year))>=2006
+#There were some changes to hydrosystem opperations around this time, which may have resulted in the cooler temperatures observed after 2005 and possibly other factors that could have results in higher survival
+
+#look at how water temperature has changed over the yers in the data
+plot(envdata$year[!is.na(envdata$CRtemp.spr)][-22],envdata$CRtemp.spr[!is.na(envdata$CRtemp.spr)][-22],ylab="CRtemp.spr")
+points(yrs,envdata[!is.na(match(envdata$year,yrs)),"CRtemp.spr"],pch=19,col="darkred")
+abline(v=2005.5,col="red")
+legend(x="bottomleft",legend=c("no SAR data","SAR data"),pch=c(1,19),col=c("black","darkred"))
+
+#fit model
+JDsarShiftMod<-glm(formula = survived ~ after05 + cui.spr + julian, family = "binomial", 
+    data = JDsubEnv)
+
+summary(JDsarShiftMod)
+
+#hosmer lemeshow test for lack of fit
+#no evidence of a lack of fit
+library(ResourceSelection)
+for(i in c(5,10,15,20,25)){
+print(hoslem.test(JDsubEnv$survived,fitted(JDsarShiftMod),g=i))}
+
+#AUC
+library(pROC)
+JDsarROC<-roc(JDsubEnv$survived,predict(JDsarShiftMod,newdata=JDsubEnv))
+JDsarROC
+
+
+#predict each fish
+predJDsthdshift <- predict(JDsarShiftMod,se=T,re.form=~0)
+#average within year
+predJDshift<-tapply(predJDsthdshift$fit,JDsubEnv$year,mean)
+#SE
+predJDshiftSE<-tapply(predJDsthdshift$se.fit,JDsubEnv$year,mean)
+
+
+#plot
+par(mar=c(4,4,1.1,1.1))
+plot(yrs,plogis(predJDshift),pch=18,type="b",ylim=c(0,0.2),ylab="SAR",xlab="year of estuary entry (brood+2)")
+
+#fixed-effects CI
+polygon(c(yrs,rev(yrs)),c(plogis(predJDshift+1.96*predJDshiftSE),rev(plogis(predJDshift-1.96*predJDshiftSE))),border = NA,col="lightgrey")
+#add back predictions
+points(yrs,plogis(predJDshift),pch=18,type="b")
+
+#prediction from fixed-year model
+points(yrs,plogis(yearPred $fit) ,pch=19,col=rgb(1,.2,.2,.7),ylim=c(0,0.07))
+
+segments(yrs,plogis(yearPred$fit+1.96*yearPred$se.fit),yrs,plogis(yearPred$fit-1.96*yearPred$se.fit),col=rgb(1,.2,.2,.7))
+
+legend(x="topleft",legend=c("observed", "model"),pch=c(19:18),col=c(col=rgb(1,.2,.2,.7),"black"),border = NA,cex=.7)
+
+#end plot of fits
+
+#calaculate residuals for year
+JDshiftResid<-
+plogis(predJDshift)-tapply(JDsubEnv$survived,JDsubEnv$year,mean)
+
+#plot residuals vs. year
+plot(x=yrs ,JDshiftResid
+,typ="b",ylab="residuals",xlab="")
+abline(h=0)
+
+#look at residual autocorrelation at different lags
+a<-acf(JDshiftResid)
+a
+
+
+#-------------------------------------------------------------------
+#      Leave-year-out cross validation
+#------------------------------------------------------------------
+library(caret)
+
+#function for cross validation
+LveYrOutCV<-function(model,data,title=""){
+  
+# number of unique years
+k<-length(unique(data$year))
+#create datasets, each with year(s) of data removed
+folds<-groupKFold(data$year, k=k)
+
+#empty vectors to hold predictions and SE for left-out years
+CVvec<-vector("numeric",length=length(unique(data$year)))
+names(CVvec)<-sort(unique(data$year))
+CVvecSE<-CVvec
+CVvecSE2<-CVvec
+#loop through years
+for  ( i in 1:length(folds)){
+  #subset data removing one year
+subDat<-data[folds[[i]],]
+#get left-out year
+subyrs<-unique(data$year[-folds[[i]]])
+#refit model to subset of data
+modUp<- update(model,data=subDat)
+#updated-model predictioin
+modUpPred<-predict(modUp,newdata=data,se=T,re.form=~0)
+#annual prediction for SAR (and SE) with updated model for all years
+pr<-tapply(modUpPred$fit, data[,c("year") ] , mean)
+prSE<-tapply(modUpPred$se.fit , data[,c("year") ] , mean)
+#Assign prediction for left out year to vector
+CVvec[as.character(subyrs)]<-pr[as.character(subyrs)]
+#fixed SE
+CVvecSE[as.character(subyrs)]<-prSE[as.character(subyrs)]
+#fixed plus random SE
+CVvecSE2[as.character(subyrs)]<-sqrt((prSE[as.character(subyrs)])^2+ (ifelse(class(model)[1]=="glmerMod",as.numeric(as.data.frame(VarCorr(modUp))["sdcor"]),0)^2))
+  #prSE[as.character(subyrs),1]
+}
+
+par(mar=c(4,4,1.1,1.1))
+#plot
+plot(yrs,plogis(CVvec),pch=18,type="b",ylim=c(0,0.2),ylab="SAR",xlab="year of estuary entry (brood+2)",main=title)
+
+#fixed-effects CI
+polygon(c(yrs,rev(yrs)),c(plogis(CVvec+1.96*CVvecSE),rev(plogis(CVvec-1.96*CVvecSE))),border = NA,col="lightgrey")
+#add back predictions
+points(yrs,plogis(CVvec),pch=18,type="b")
+
+#observations and 1.96 * standard error
+
+points(yrs,plogis(yearPred$fit) ,pch=19,col=rgb(1,.2,.2,.7))
+
+segments(yrs,plogis(yearPred$fit+1.96*yearPred$se.fit),yrs,plogis(yearPred$fit-1.96*yearPred$se.fit),col=rgb(1,.2,.2,.7))
+
+#fised plus random CI
+points(yrs,plogis(CVvec+1.96*CVvecSE2),type="l",lty=2,col="darkgrey")
+
+points(yrs,plogis(CVvec-1.96*CVvecSE2),type="l",lty=2,col="darkgrey")
+
+
+legend(x="topleft",legend=c("observed", "model"),pch=19:18,col=c(col=rgb(1,.2,.2,.7),"black"))
+}
+
+#Cross Validation for mixed-effect random-year model
+LveYrOutCV(JDsthdRndYrTop,JDsubEnv,title="rand-year mod")
+
+#Cross Validation for post-2005-shift model
+LveYrOutCV(JDsarShiftMod,JDsubEnv,title="step mod")
+
+
+```
+End
